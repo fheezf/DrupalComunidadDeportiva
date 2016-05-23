@@ -1,0 +1,106 @@
+From a20d0f951684cbb4fe390fe5198b1561533bf3b0 Sun, 20 Jan 2013 15:10:48 +0100
+From: hass <hass@85918.no-reply.drupal.org>
+Date: Sun, 20 Jan 2013 15:10:07 +0100
+Subject: [PATCH] #1240850: Publishing/Unpublishing a revision changes the author of that revision.
+
+diff --git a/workbench_moderation.module b/workbench_moderation.module
+index 3370981..7d53699 100644
+--- a/workbench_moderation.module
++++ b/workbench_moderation.module
+@@ -1569,7 +1569,9 @@
+   unset($taxonomy_index_flag[$node->nid]);
+ 
+   // Save the node.
++  workbench_moderation_impersonate_user($live_revision->uid);
+   node_save($live_revision);
++  workbench_moderation_revert_user();
+ }
+ 
+ /**
+@@ -2106,3 +2108,62 @@
+ function workbench_moderation_migrate_api() {
+   return array('api' => 2);
+ }
++
++/**
++ * Impersonates another user. http://drupal.org/node/287292#comment-3162350
++ *
++ * Each time this function is called, the active user is saved and $new_user
++ * becomes the active user. Multiple calls to this function can be nested,
++ * and session saving will be disabled until all impersonation attempts have
++ * been reverted using workbench_moderation_revert_user().
++ *
++ * @param $new_user
++ *   User to impersonate, either a UID or a user object.
++ *
++ * @return
++ *   Current user object.
++ *
++ * @see workbench_moderation_revert_user()
++ */
++function workbench_moderation_impersonate_user($new_user = NULL) {
++  global $user;
++  $user_original = &drupal_static(__FUNCTION__);
++
++  if (!isset($new_user)) {
++    if (isset($user_original) && !empty($user_original)) {
++      // Restore the previous user from the stack.
++      $user = array_pop($user_original);
++
++      // Re-enable session saving if we are no longer impersonating a user.
++      if (empty($user_original)) {
++        drupal_save_session(TRUE);
++      }
++    }
++  }
++  else {
++    // Push the original user onto the stack and prevent session saving.
++    $user_original[] = $user;
++    drupal_save_session(FALSE);
++
++    if (is_numeric($new_user)) {
++      $user = user_load($new_user);
++    }
++    else {
++      $user = is_object($new_user) ? $new_user : (object) $new_user;
++    }
++  }
++
++  return $user;
++}
++
++/**
++ * Reverts to the previous user after impersonating.
++ *
++ * @return
++ *   Current user.
++ *
++ * @see workbench_moderation_impersonate_user()
++ */
++function workbench_moderation_revert_user() {
++  return workbench_moderation_impersonate_user();
++}
+diff --git a/workbench_moderation.node.inc b/workbench_moderation.node.inc
+index 5baaf59..6e528c8 100644
+--- a/workbench_moderation.node.inc
++++ b/workbench_moderation.node.inc
+@@ -299,8 +299,18 @@
+   $live_revision->status = 0;
+   $live_revision->revision = 0;
+   $live_revision->workbench_moderation['updating_live_revision'] = TRUE;
++
+   // @TODO: do we trust node_save() here?
+-  node_save($live_revision);
++  // Change the user to the author of the node to retain the correct uid in the
++  // node. See http://drupal.org/node/1240850.
++  if ($user->uid != $live_revision->uid) {
++    workbench_moderation_impersonate_user($live_revision->uid);
++    node_save($live_revision);
++    workbench_moderation_revert_user();
++  }
++  else {
++    node_save($live_revision);
++  }
+ 
+   drupal_set_message(t('The live revision of this content has been unpublished.'));
+   $form_state['redirect'] ="node/{$node->nid}/moderation";
